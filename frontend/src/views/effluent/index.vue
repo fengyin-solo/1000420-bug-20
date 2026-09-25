@@ -14,7 +14,7 @@
     <div class="stat-row">
       <article v-for="item in stats" :key="item.label" class="stat-card">
         <span class="stat-label">{{ item.label }}</span>
-        <strong class="stat-value">{{ item.value }}</strong>
+        <strong class="stat-value">{{ formatStat(item) }}</strong>
       </article>
     </div>
 
@@ -68,18 +68,29 @@ import { onMounted, ref } from 'vue'
 import { request } from '@/api/client'
 
 type Row = Record<string, string | number | null>
+type Stats = { today_flow: number; pass_rate: number; exceeded: number }
 
 const ENDPOINT = '/api/effluent'
 const columns = ["监测编号", "采样时间", "出水流量", "化学需氧量", "氨氮浓度", "总磷浓度", "达标判定", "监测状态"]
 const actions = ["开始检测", "判定达标", "标记超标"]
 const statuses = ["待检测", "检测中", "已达标", "已超标"]
-const stats = [{"label": "今日出水量", "value": 0}, {"label": "达标率", "value": 0}, {"label": "超标次数", "value": 0}]
 
 const rows = ref<Row[]>([])
 const total = ref(0)
 const errorMessage = ref('')
 const filters = ref<Record<string, string>>({})
 const filterFields = columns.slice(0, 3)
+const stats = ref<{ label: string; key: keyof Stats; unit: string }[]>([
+  { label: "今日出水量", key: "today_flow", unit: "m³" },
+  { label: "达标率", key: "pass_rate", unit: "%" },
+  { label: "超标次数", key: "exceeded", unit: "次" },
+])
+const statsData = ref<Stats>({ today_flow: 0, pass_rate: 0, exceeded: 0 })
+
+function formatStat(item: { key: keyof Stats; unit: string }): string {
+  const value = statsData.value[item.key]
+  return item.unit === '%' ? `${value}%` : `${value}${item.unit}`
+}
 
 function resetFilters() {
   filters.value = {}
@@ -94,6 +105,18 @@ function openCreate() {
   errorMessage.value = '出水记录登记入口尚未接入审批流'
 }
 
+async function loadStats() {
+  try {
+    const response = await request(`${ENDPOINT}/stats`)
+    if (!response.ok) {
+      throw new Error('统计数据读取失败')
+    }
+    statsData.value = await response.json()
+  } catch (error) {
+    errorMessage.value = error instanceof Error ? error.message : '出水监测统计读取失败'
+  }
+}
+
 async function runAction(action: string, row: Row) {
   errorMessage.value = ''
   try {
@@ -104,9 +127,16 @@ async function runAction(action: string, row: Row) {
     if (!response.ok) {
       throw new Error('出水监测动作未生效，请稍后重试')
     }
-    await reload()
+    // 后端以 HTTP 200 + ok=false 返回业务失败（如 COD 为空/超量程），
+    // 必须读出原因并保留页面数据，方便补测后重试；状态未变更，无需刷新列表
+    const payload = await response.json()
+    if (!payload.ok) {
+      errorMessage.value = payload.message || '出水监测动作未生效，请稍后重试'
+      return
+    }
+    await Promise.all([reload(), loadStats()])
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '出水监测操作失败'
+    errorMessage.value = error instanceof Error ? error.message : '出水监测操作失败，请稍后重试'
   }
 }
 
@@ -116,15 +146,18 @@ async function reload() {
   try {
     const response = await request(`${ENDPOINT}?${query}`)
     if (!response.ok) {
-      throw new Error('出水记录列表读取失败')
+      throw new Error('出水记录列表读取失败，请稍后重试')
     }
     const payload = await response.json()
     rows.value = payload.items ?? []
     total.value = payload.total ?? rows.value.length
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '出水监测列表读取失败'
+    errorMessage.value = error instanceof Error ? error.message : '出水监测列表读取失败，请稍后重试'
   }
 }
 
-onMounted(reload)
+onMounted(() => {
+  void reload()
+  void loadStats()
+})
 </script>
