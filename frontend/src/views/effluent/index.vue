@@ -70,10 +70,14 @@ import { request } from '@/api/client'
 type Row = Record<string, string | number | null>
 
 const ENDPOINT = '/api/effluent'
-const columns = ["监测编号", "采样时间", "出水流量", "化学需氧量", "氨氮浓度", "总磷浓度", "达标判定", "监测状态"]
+const columns = ["监测编号", "采样时间", "出水流量", "化学需氧量", "氨氮浓度", "总磷浓度", "达标判定", "判定说明", "监测状态"]
 const actions = ["开始检测", "判定达标", "标记超标"]
 const statuses = ["待检测", "检测中", "已达标", "已超标"]
-const stats = [{"label": "今日出水量", "value": 0}, {"label": "达标率", "value": 0}, {"label": "超标次数", "value": 0}]
+const stats = ref([
+  { label: "今日出水量", value: 0 },
+  { label: "达标率", value: "暂无已判定记录" },
+  { label: "超标次数", value: 0 },
+])
 
 const rows = ref<Row[]>([])
 const total = ref(0)
@@ -99,14 +103,18 @@ async function runAction(action: string, row: Row) {
   try {
     const response = await request(`${ENDPOINT}/${row.id}/actions`, {
       method: 'POST',
-      body: JSON.stringify({ action }),
+      body: JSON.stringify({ values: { action } }),
     })
-    if (!response.ok) {
-      throw new Error('出水监测动作未生效，请稍后重试')
+    const payload = await response.json().catch(() => null)
+    if (!response.ok || !payload?.ok) {
+      // 后端拦下的判定（空数据、超量程、超限值）都会带原因，直接展示给用户
+      errorMessage.value = payload?.message || '出水监测动作未生效，请核对数据后重试'
     }
-    await reload()
   } catch (error) {
-    errorMessage.value = error instanceof Error ? error.message : '出水监测操作失败'
+    errorMessage.value = error instanceof Error ? error.message : '出水监测操作失败，请稍后重试'
+  } finally {
+    // 无论成功失败都刷新：失败原因已写入记录的判定说明，列表与统计保持最新
+    await reload()
   }
 }
 
@@ -114,13 +122,22 @@ async function reload() {
   errorMessage.value = ''
   const query = new URLSearchParams(filters.value as Record<string, string>).toString()
   try {
-    const response = await request(`${ENDPOINT}?${query}`)
-    if (!response.ok) {
+    const [listResponse, statsResponse] = await Promise.all([
+      request(`${ENDPOINT}?${query}`),
+      request(`${ENDPOINT}/stats?${query}`),
+    ])
+    if (!listResponse.ok) {
       throw new Error('出水记录列表读取失败')
     }
-    const payload = await response.json()
+    const payload = await listResponse.json()
     rows.value = payload.items ?? []
     total.value = payload.total ?? rows.value.length
+    if (statsResponse.ok) {
+      const statsPayload = await statsResponse.json()
+      if (Array.isArray(statsPayload.stats) && statsPayload.stats.length) {
+        stats.value = statsPayload.stats
+      }
+    }
   } catch (error) {
     errorMessage.value = error instanceof Error ? error.message : '出水监测列表读取失败'
   }

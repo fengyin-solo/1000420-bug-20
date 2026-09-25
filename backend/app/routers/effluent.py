@@ -12,7 +12,7 @@ router = APIRouter(prefix="/api/effluent", tags=["出水监测"])
 
 service = EffluentService()
 
-LIST_FIELDS = ["监测编号", "采样时间", "出水流量", "化学需氧量", "氨氮浓度", "总磷浓度", "达标判定", "监测状态"]
+LIST_FIELDS = ["监测编号", "采样时间", "出水流量", "化学需氧量", "氨氮浓度", "总磷浓度", "达标判定", "判定说明", "监测状态"]
 STATUSES = ["待检测", "检测中", "已达标", "已超标"]
 
 
@@ -28,6 +28,15 @@ def list_entries(
         raise HTTPException(status_code=400, detail="每页最多 200 条，请缩小分页范围")
     items, total = service.list_entries(keyword=keyword, status=status, page=page, size=size)
     return PageResult(items=items, total=total, page=page, size=size)
+
+
+@router.get("/stats")
+def get_stats(
+    keyword: str | None = Query(default=None, description="按监测编号检索"),
+    status: str | None = Query(default=None, description="待检测、检测中、已达标、已超标"),
+) -> dict[str, Any]:
+    """列表页统计卡：与概览共用同一套异常口径（已超标即异常），不带分页。"""
+    return {"module": "effluent", "stats": service.stats(keyword=keyword, status=status)}
 
 
 @router.get("/{entry_id}", response_model=dict)
@@ -52,7 +61,7 @@ def create_entry(payload: EntryPayload) -> ActionResult:
 def run_action(entry_id: int, payload: EntryPayload) -> ActionResult:
     """对单条出水记录执行开始检测、判定达标、标记超标；不允许的动作会被拦下并说明原因。"""
     action = str(payload.values.get("action") or "").strip()
-    entry, message = service.run_action(entry_id, action)
+    entry, message = service.run_action(entry_id, action, payload.values)
     if entry is None:
         return ActionResult(ok=False, message=message)
     return ActionResult(ok=True, message=message, entry=entry)
